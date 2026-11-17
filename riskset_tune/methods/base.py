@@ -5,6 +5,7 @@ from pathlib import Path
 from collections.abc import Callable, Sequence
 import os
 import hashlib
+import json
 
 import numpy as np
 
@@ -25,7 +26,9 @@ class ContextMethod:
                  device: str = "cpu",
                  loss_components: Sequence[Callable] | None = None,
                  n_time_strata: int = 4, censoring_weight_floor: float = 0.05,
-                 diagnostics_every: int = 100, deadline_epoch: float | None = None):
+                 diagnostics_every: int = 100, deadline_epoch: float | None = None,
+                 deadline_control_path: str | Path | None = None,
+                 auxiliary_strength: float = .1):
         self.adapter, self.k, self.seed = adapter, context_size, seed
         self.initialization, self.steps = initialization, steps
         self.batch_size, self.learning_rate = batch_size, learning_rate
@@ -36,6 +39,11 @@ class ContextMethod:
         self.censoring_weight_floor = censoring_weight_floor
         self.diagnostics_every = int(diagnostics_every)
         self.deadline_epoch = deadline_epoch
+        self.deadline_control_path = Path(deadline_control_path) if deadline_control_path else None
+        self.auxiliary_strength = float(auxiliary_strength)
+        self._auxiliary_state = None
+        if self.auxiliary_strength < 0:
+            raise ValueError("auxiliary_strength must be non-negative")
         if any(not callable(component) for component in self.loss_components):
             raise TypeError("each additional loss component must be callable")
         if self.steps < 1 or self.batch_size < 1 or self.validation_every < 1:
@@ -81,6 +89,9 @@ class ContextMethod:
                      "censoring_weight_floor": float(self.censoring_weight_floor),
                      "initialization": self.initialization, "n_time_strata": int(self.n_time_strata),
                      "device": str(self.adapter.device)}
+        if self.name in {"riskset-score", "riskset-listwise"}:
+            signature.update(objective_version=2, objective=self.name,
+                             auxiliary_strength=self.auxiliary_strength)
         query_w = ipcw_weights(risk_data.time, risk_data.event, query_t, query_e,
                                eps=self.censoring_weight_floor)
         val_w = ipcw_weights(risk_data.time, risk_data.event,
@@ -113,6 +124,7 @@ class ContextMethod:
             torch.random.set_rng_state(state["torch_rng"].cpu())
             if torch.cuda.is_available() and state.get("cuda_rng") is not None:
                 torch.cuda.set_rng_state_all(state["cuda_rng"])
+        self.start_step = start_step
         start = time.perf_counter()
         if self.name == "random" or not x_trainable:
             self.best_validation_loss = self._validation(
@@ -127,12 +139,25 @@ class ContextMethod:
                                  "validation_loss": initial_val, "is_initial_context": True})
             best_loss, best_x = initial_val, x_fixed.detach().clone()
         risk_parts = self._make_named_loss_components(risk_data, initial)
+        if self.name in {"riskset-score", "riskset-listwise"} and self.auxiliary_strength:
+            self._prepare_auxiliary(risk_data, initial)
+            fingerprint = self._auxiliary_fingerprint()
+            if resume:
+                self._auxiliary_state = state.get("auxiliary_state")
+                if not self._auxiliary_state or self._auxiliary_state.get("fingerprint") != fingerprint:
+                    raise ValueError("auxiliary checkpoint does not match the fitted objective")
+            else:
+                self._auxiliary_state = self._calibrate_auxiliary(
+                    x_parameter, x_fixed, mask, initial, optimization_queries, query_w, fingerprint)
+            self.diagnostics["auxiliary_calibration"] = self._auxiliary_state
+            self.diagnostics["risk_bin_coverage"] = getattr(getattr(self, "_score_term", None), "coverage", None)
         if state_path is not None and not resume:
             self._save_training_state(state_path, torch, optimizer, x_parameter, rng,
                                       start_step, best_loss, best_x, stale, signature)
         self.budget_exhausted = False
         for step in range(start_step, self.steps):
-            if self.deadline_epoch is not None and time.time() >= self.deadline_epoch:
+            deadline = self._current_deadline()
+            if deadline is not None and time.time() >= deadline:
                 self.budget_exhausted = True
                 if state_path is not None:
                     self._save_training_state(state_path, torch, optimizer, x_parameter, rng,
@@ -148,6 +173,11 @@ class ContextMethod:
             component_losses = [component(x_effective, initial) for component in components]
             raw_risk = [fn(x_effective, initial) for _, _, fn in risk_parts]
             weighted_risk = [weight * value for (_, weight, _), value in zip(risk_parts, raw_risk)]
+            aux_stats = {}
+            if self._auxiliary_state is not None:
+                aux, aux_stats = self._auxiliary_loss(x_effective, logits, query_t[batch], query_e[batch])
+                raw_risk.append(aux)
+                weighted_risk.append(self._auxiliary_state["alpha"] * aux)
             loss = nll + sum(component_losses, nll.new_zeros(())) + sum(weighted_risk, nll.new_zeros(()))
             if not torch.isfinite(loss):
                 raise FloatingPointError("non-finite optimization loss at step %d" % step)
@@ -155,12 +185,19 @@ class ContextMethod:
                    "risk_penalty_raw": float(sum((v.detach() for v in raw_risk), nll.new_zeros(())).cpu()),
                    "risk_penalty_weighted": float(sum((v.detach() for v in weighted_risk), nll.new_zeros(())).cpu()),
                    "train_loss": float(loss.detach().cpu())}
+            row.update(aux_stats)
+            if self._auxiliary_state is not None:
+                row["auxiliary_alpha"] = self._auxiliary_state["alpha"]
+                if getattr(self, "_score_term", None) is not None:
+                    row["risk_bin_coverage"] = self._score_term.coverage
             if risk_parts:
                 coverages = [getattr(getattr(fn, "__self__", None), "last_coverage", None)
                              for _, _, fn in risk_parts]
                 coverages = [value for value in coverages if value is not None]
                 if coverages:
                     row["risk_bin_coverage"] = float(np.mean(coverages))
+                elif getattr(self, "_legacy_risk_term", None) is not None:
+                    row["risk_bin_coverage"] = self._legacy_risk_term.last_coverage
             if self.diagnostics_every and (step + 1) % self.diagnostics_every == 0:
                 for j in np.flatnonzero(initial.trainable_mask):
                     scale = float(np.nanstd(risk_data.X[:, j]))
@@ -218,8 +255,63 @@ class ContextMethod:
                  "best_x": best_x.detach().cpu(), "stale": int(stale), "history": self.history,
                  "numpy_rng": rng.bit_generator.state, "torch_rng": torch.random.get_rng_state(),
                  "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None}
+        if self.name in {"riskset-score", "riskset-listwise"}:
+            state.update(state_version=2, auxiliary_state=self._auxiliary_state)
         torch.save(state, temporary)
         os.replace(temporary, path)
+
+    def _current_deadline(self):
+        if self.deadline_control_path is None:
+            return self.deadline_epoch
+        with self.deadline_control_path.open(encoding="utf-8") as stream:
+            return float(json.load(stream)["deadline_epoch"])
+
+    def _prepare_auxiliary(self, reference_data, context):
+        pass
+
+    def _auxiliary_fingerprint(self):
+        return self.name + ":v2"
+
+    def _auxiliary_loss(self, x, logits, time, event):
+        raise NotImplementedError
+
+    def _calibrate_auxiliary(self, parameter, fixed, mask, context, queries, query_w, fingerprint):
+        torch = self.adapter._torch
+        rng = np.random.default_rng(np.random.SeedSequence([self.seed, self.k, 701]))
+        records = []
+        times, events = np.asarray(queries.time), np.asarray(queries.event)
+        for _ in range(20):
+            batch = rng.choice(len(queries), size=min(self.batch_size, len(queries)), replace=False)
+            t, e = times[batch], events[batch]
+            valid = e & (t[:, None] < t[None, :]).any(axis=1)
+            if not valid.any():
+                continue
+            x = torch.where(mask[None, :], parameter, fixed)
+            logits = self.adapter.forward_logits(x, context.time, context.event,
+                torch.as_tensor(queries.X[batch], dtype=torch.float32, device=self.adapter.device))
+            nll = self.adapter.loss(logits, t, e, query_w[batch])
+            auxiliary, _ = self._auxiliary_loss(x, logits, t, e)
+            ng = torch.autograd.grad(nll, parameter, retain_graph=True)[0]
+            ag = torch.autograd.grad(auxiliary, parameter)[0]
+            selected = mask[None, :].expand_as(ng)
+            n_norm, a_norm = float(ng[selected].norm().detach()), float(ag[selected].norm().detach())
+            if not np.isfinite([n_norm, a_norm]).all() or min(n_norm, a_norm) <= 1e-12:
+                continue
+            records.append({"indices": batch.tolist(), "nll_grad_norm": n_norm,
+                            "aux_grad_norm": a_norm})
+            if len(records) == 5:
+                break
+        if len(records) != 5:
+            raise ValueError("auxiliary calibration requires five valid batches within 20 draws")
+        alpha = self.auxiliary_strength * float(np.median(
+            [r["nll_grad_norm"] / r["aux_grad_norm"] for r in records]))
+        if not np.isfinite(alpha) or alpha <= 0:
+            raise ValueError("invalid calibrated auxiliary strength")
+        state = {"fingerprint": fingerprint, "alpha": alpha, "batches": records,
+                 "target_gradient_ratio": self.auxiliary_strength}
+        if getattr(self, "_score_term", None) is not None:
+            state["score_state"] = self._score_term.state_dict()
+        return state
 
     def _make_named_loss_components(self, reference_data, context):
         return []
@@ -293,5 +385,28 @@ class RiskSetTune(ContextMethod):
             return []
         term = RiskSetContrast(reference_data.time, reference_data.event,
                                reference_data.X, context.trainable_mask, self.risk_bins)
+        self._legacy_risk_term = term
         return [("riskset_contrast", self.lambda_risk,
                  lambda X, ctx: term(X, ctx.time, ctx.event))]
+
+
+class RiskSetScoreTune(ContextMethod):
+    name = "riskset-score"
+
+    def _prepare_auxiliary(self, reference_data, context):
+        from ..losses.variants import RiskSetScore
+        self._score_term = RiskSetScore(reference_data, context, self.risk_bins)
+
+    def _auxiliary_fingerprint(self):
+        return self.name + ":v2:" + self._score_term.fingerprint
+
+    def _auxiliary_loss(self, x, logits, time, event):
+        return self._score_term(x), {}
+
+
+class RiskSetListwiseTune(ContextMethod):
+    name = "riskset-listwise"
+
+    def _auxiliary_loss(self, x, logits, time, event):
+        from ..losses.variants import listwise_risk_loss
+        return listwise_risk_loss(self.adapter, logits, time, event)

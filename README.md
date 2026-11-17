@@ -1,6 +1,6 @@
 # RiskSet-Tune
 
-Infraestrutura experimental para comparar contextos Random, TuneTables adaptado e RiskSet-Tune com pesos congelados do SurvPFN. Esta entrega prepara o código; não contém resultados experimentais.
+Infraestrutura experimental para comparar contextos Random, TuneTables adaptado e variantes de RiskSet-Tune com pesos congelados do SurvPFN. Os resultados de pilotos locais ficam sob `runs/` e são exploratórios.
 
 ## Estado
 
@@ -83,3 +83,7 @@ Os testes de integração são opcionais e requerem fonte oficial e checkpoint l
 ## Protocolo e limitações
 
 Os grupos de inicialização, consultas, validação e teste são disjuntos. Imputação, mapeamento de categorias, PCA, pesos de censura e grade de avaliação usam somente dados de treino. Random seleciona linhas reais; TuneTables e RiskSet-Tune compartilham inicialização, consultas, orçamento e loss. Consulte [METHODOLOGY.md](METHODOLOGY.md) para a correspondência com TuneTables e a hipótese da regularização, e [NEXT_STEPS.md](NEXT_STEPS.md) para as validações pendentes.
+
+## Comparação de variantes de conjuntos de risco
+
+`configs/riskset_variants.yaml` configura RiskSet-Score e RiskSet-Listwise, além das referências anteriores. A definição dos objetivos, a calibração da força e as limitações do experimento estão em [METHODOLOGY.md](METHODOLOGY.md). O executor retomável é `python -m riskset_tune.experiments.variants_pilot`; `scripts/install_variants_launch_agent.py` prepara o LaunchAgent independente no macOS. Resultados são escritos em um diretório novo sob `runs/`.

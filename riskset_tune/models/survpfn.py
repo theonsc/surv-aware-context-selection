@@ -156,6 +156,31 @@ class SurvPFNAdapter:
         y = self.target_transform.transform(t).unsqueeze(0)
         return native_censored_nll(logits.unsqueeze(0), y, e.unsqueeze(0), self.distribution, w.unsqueeze(0))
 
+    def survival_tensor(self, logits, times):
+        """Differentiable equivalent of the official survival-grid decoder.
+
+        ``times`` are in the original time scale.  The upstream decoder uses
+        half of the endpoint bucket mass inside the grid and constant tails.
+        """
+        torch = self._torch
+        times = torch.as_tensor(times, dtype=logits.dtype, device=logits.device).reshape(-1)
+        t = self.target_transform.transform(times)
+        borders = self.distribution.borders.to(device=logits.device, dtype=logits.dtype)
+        widths = self.distribution.bucket_widths.to(device=logits.device, dtype=logits.dtype)
+        probs = torch.softmax(logits, dim=-1)
+        factors = torch.ones_like(borders[:-1])
+        factors[0] = factors[-1] = .5
+        inside = probs * factors
+        cumulative = inside.cumsum(-1)
+        left = torch.cat([torch.zeros_like(cumulative[:, :1]), cumulative[:, :-1]], dim=-1)
+        clipped = t.clamp(borders[0], borders[-1])
+        index = (torch.searchsorted(borders, clipped) - 1).clamp(0, len(widths) - 1)
+        fraction = ((clipped - borders[index]) / (widths[index] + 1e-10)).clamp(0, 1)
+        cdf = left[:, index] + inside[:, index] * fraction.unsqueeze(0)
+        cdf = torch.where((t < borders[0]).unsqueeze(0), torch.zeros_like(cdf), cdf)
+        cdf = torch.where((t > borders[-1]).unsqueeze(0), cumulative[:, -1:], cdf)
+        return (1 - cdf).clamp(0, 1)
+
     def predict(self, X_query):
         if not self.is_fitted:
             raise RuntimeError("fit_context must be called before predict")
