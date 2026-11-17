@@ -1,0 +1,38 @@
+data:
+  benchmark: finsurvival
+  root: ./data/finsurvival
+  format: rds
+  index_event: Borrow
+  outcome_event: Repay
+  validation_fraction: 0.2
+  pca_components: 10
+  columns:
+    id: id
+    time: timeDiff
+    event: status
+    categorical_features: []
+model:
+  name: SurvPFN
+  device: cpu
+  precision: float32
+  checkpoint_repo: samuelboehm/SurvPFN
+  checkpoint_file: survpfn_nr.pt
+training:
+  initialization: random
+  steps: 200
+  batch_size: 32
+  learning_rate: 0.001
+  validation_every: 10
+  early_stopping_patience: null
+  n_time_strata: 4
+  censoring_weight_floor: 0.05
+  lambda_risk: 0.1
+  risk_bins: 4
+experiment:
+  context_sizes: [64]
+  seeds: [42, 43, 44]
+  methods: [random, tunetables, riskset-tune]
+evaluation:
+  time_grid_points: 50
+  lower_time_quantile: 0.1
+  horizon_quantile: 0.9
