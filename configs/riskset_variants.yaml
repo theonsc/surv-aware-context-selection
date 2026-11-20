@@ -26,7 +26,7 @@ experiment:
   context_sizes: [32, 64]
   seeds: [42, 43]
   stage_steps: [200, 1000, 2000]
-  methods: [tunetables, riskset-tune, riskset-score, riskset-listwise, random, coxph_l2]
+  methods: [tunetables, riskset-tune, riskset-score, riskset-listwise, random, knn, coxph_l2]
   partial_report_hours: 3
 evaluation:
   time_grid_points: 50

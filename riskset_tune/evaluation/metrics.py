@@ -45,8 +45,12 @@ def evaluate_predictions(train_time, train_event, test_time, test_event,
     sp = np.asarray(survival, dtype=float)
     if sp.ndim != 2 or sp.shape[0] != len(te_t):
         raise ValueError("survival predictions must have shape (n_test, n_times)")
-    order = np.argsort(st)
-    estimate = np.vstack([np.interp(grid, st[order], row[order]) for row in sp])
+    if st.ndim == 1:
+        st = np.broadcast_to(st, sp.shape)
+    if st.shape != sp.shape:
+        raise ValueError("survival times must be shared or match the survival prediction shape")
+    estimate = np.vstack([np.interp(grid, times[np.argsort(times)], row[np.argsort(times)])
+                          for times, row in zip(st, sp)])
     if not (eval_t.min() <= grid.min() and grid.max() <= eval_t.max()):
         ibs, ibs_reason = float("nan"), "training-derived IBS grid is outside the open test follow-up interval"
     else:

@@ -21,7 +21,7 @@ from ..data.preprocessing import TrainOnlyPreprocessor
 from ..data.splits import make_splits
 from ..data.types import SurvivalDataset
 from ..evaluation import evaluate_predictions, save_results, plot_results
-from ..methods import RandomContext, RiskSetTune, TuneTables
+from ..methods import RandomContext, RiskSetTune, TuneTables, KNNContext
 from ..models import SurvPFNAdapter
 
 
@@ -149,7 +149,7 @@ def _cox_diagnostic(bundle, config, tau_config):
 
 def run_experiment(config, checkpoint, output_dir):
     model_cfg, train_cfg, exp_cfg = config["model"], config["training"], config["experiment"]
-    methods = {"random": RandomContext, "tunetables": TuneTables, "riskset-tune": RiskSetTune}
+    methods = {"knn": KNNContext, "random": RandomContext, "tunetables": TuneTables, "riskset-tune": RiskSetTune}
     rows = []
     split_records = []
     split_arrays = {}
@@ -190,7 +190,7 @@ def run_experiment(config, checkpoint, output_dir):
                         diagnostics_every=train_cfg.get("diagnostics_every", 100),
                         deadline_epoch=train_cfg.get("deadline_epoch"))
                     state_path = None
-                    if train_cfg.get("state_dir") and name != "random":
+                    if train_cfg.get("state_dir") and name not in {"random", "knn"}:
                         lambda_label = ("lambda_%s" % str(lambda_risk).replace(".", "p")
                                         if name == "riskset-tune" else "lambda_0")
                         state_path = (Path(train_cfg["state_dir"]) / bundle["dataset"] /

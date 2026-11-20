@@ -50,3 +50,7 @@ O experimento `configs/riskset_variants.yaml` trata os seis datasets já examina
 Cada objetivo auxiliar tem força fixa calibrada no contexto inicial: α é 0,1 vezes a mediana da razão entre as normas dos gradientes da NLL e da penalidade em cinco batches válidos, escolhidos por gerador separado em até 20 tentativas. Falhas de calibração são registradas. α=0 desvia diretamente para o treinamento de TuneTables. As escalas Score, Listwise e o λ=0,1 do RiskSet original não são diretamente comparáveis em unidades de loss.
 
 Os checkpoints novos incluem configuração, sondas e estatísticas auxiliares, calibração, Adam, geradores, melhor contexto e a transformação temporal. O executor salva cada método ao terminar, calcula comparações somente em marcos concluídos e guarda prazo em `control.json`; editar atomicamente `deadline_epoch` permite mudar o prazo de um processo ativo. A extensão do prazo deve respeitar a autorização do usuário. O progresso e as estimativas usam somente tempos e jobs concluídos, não métricas de teste. Todos os achados continuam exploratórios.
+
+## Baseline k-NN
+
+Para cada consulta, `knn` seleciona K linhas do pool de referência por distância quadrática nas variáveis contínuas padronizadas e diferença categórica. Quando necessário, substitui os censurados mais distantes pelos eventos mais próximos para garantir três eventos no contexto. Cada consulta usa seu próprio contexto e sua própria transformação temporal. A seleção não usa desfechos da consulta.

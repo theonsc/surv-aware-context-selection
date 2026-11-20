@@ -21,13 +21,13 @@ import yaml
 from .extended import eligibility
 from .runner import _cox_diagnostic, load_config, prepare_survset
 from ..evaluation import evaluate_predictions
-from ..methods import RandomContext, RiskSetListwiseTune, RiskSetScoreTune, RiskSetTune, TuneTables
+from ..methods import RandomContext, RiskSetListwiseTune, RiskSetScoreTune, RiskSetTune, TuneTables, KNNContext
 from ..models import SurvPFNAdapter
 
-METHODS = {"tunetables": TuneTables, "riskset-tune": RiskSetTune,
+METHODS = {"knn": KNNContext, "tunetables": TuneTables, "riskset-tune": RiskSetTune,
            "riskset-score": RiskSetScoreTune, "riskset-listwise": RiskSetListwiseTune,
            "random": RandomContext}
-FIXED = {"random", "coxph_l2"}
+FIXED = {"random", "knn", "coxph_l2"}
 LOCK = threading.RLock()
 
 
@@ -79,7 +79,7 @@ def aggregate(output):
         keys = ["dataset", "K", "seed", "stage"]
         base = rows[rows.method.eq("tunetables")]
         paired = []
-        for method in ("riskset-tune", "riskset-score", "riskset-listwise", "random", "coxph_l2"):
+        for method in ("riskset-tune", "riskset-score", "riskset-listwise", "random", "knn", "coxph_l2"):
             variant = rows[rows.method.eq(method)]
             merged = variant.merge(base, on=keys, suffixes=("_variant", "_baseline"))
             for r in merged.to_dict("records"):
@@ -297,13 +297,13 @@ def run_job(config, checkpoint, output, control, stage, seed, k, dataset, status
                     n_time_strata=train["n_time_strata"], censoring_weight_floor=train["censoring_weight_floor"],
                     diagnostics_every=train["diagnostics_every"], deadline_control_path=control)
                 state_path = output / "state" / dataset / str(seed) / str(k) / method / "training.pt"
-                if method == "random":
+                if method in {"random", "knn"}:
                     state_path = None
                 instance.fit(bundle["reference"], bundle["queries"], bundle["validation"],
                              risk_reference_data=bundle["risk_reference"], state_path=state_path,
                              resume=bool(state_path and state_path.exists()))
                 completed_steps = max((r["step"] for r in instance.history), default=0)
-                if method != "random" and completed_steps < stage:
+                if method not in {"random", "knn"} and completed_steps < stage:
                     return False
                 prediction = instance.predict(bundle["test"].X)
                 ev = config["evaluation"]
@@ -322,6 +322,7 @@ def run_job(config, checkpoint, output, control, stage, seed, k, dataset, status
                           "inference_seconds": instance.inference_seconds,
                           "auxiliary_alpha": state["alpha"] if state else None,
                           "risk_bin_coverage": instance.diagnostics.get("risk_bin_coverage"),
+                          "adjusted_queries": instance.diagnostics.get("adjusted_queries"),
                           "context_path": str(context_path.relative_to(output)),
                           "state_path": str(state_path.relative_to(output)) if state_path else None}
             record.update(status="complete", dataset=dataset, seed=seed, K=k, stage=stage,
