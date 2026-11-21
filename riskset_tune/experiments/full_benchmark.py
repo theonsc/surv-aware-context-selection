@@ -231,6 +231,17 @@ def main():
 
 
 def run(args, cfg, out):
+    context_selection = cfg.get('context_selection', 'all')
+    if context_selection not in ('all', 'random'):
+        raise ValueError('context_selection must be all or random')
+    methods = [
+        ('random', 'random'), ('stratified', 'stratified'), ('kmeans', None),
+        ('knn', None), ('tunetables', 'random'), ('tunetables', 'stratified'),
+        ('riskset-listwise', 'random'), ('riskset-listwise', 'stratified'),
+    ]
+    if context_selection == 'random':
+        methods = [(method, init) for method, init in methods if init == 'random']
+
     adapter = SurvPFNAdapter(args.checkpoint, device='cpu')
     record_run(out, args.config, cfg, args.checkpoint, adapter.upstream_source, Path(args.fin_root))
     jobs = [('survset', x) for x in cfg['survset']] + [('finsurvival', x) for x in cfg['finsurvival']]
@@ -250,9 +261,7 @@ def run(args, cfg, out):
             if 'audit' in bundle:
                 (job / 'audit.json').write_text(json.dumps(bundle['audit'], indent=2))
             for k in cfg['context_sizes']:
-                for method, init in [('random','random'), ('stratified','stratified'), ('kmeans',None),
-                                     ('knn',None), ('tunetables','random'), ('tunetables','stratified'),
-                                     ('riskset-listwise','random'), ('riskset-listwise','stratified')]:
+                for method, init in methods:
                     tag = method + ('_' + init if init and method not in ('random','stratified') else '')
                     folder = job / str(k) / tag; folder.mkdir(parents=True, exist_ok=True)
                     stages = cfg['stages'] if method in ('tunetables','riskset-listwise') else [0]
