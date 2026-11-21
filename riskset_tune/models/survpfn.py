@@ -113,7 +113,7 @@ class SurvPFNAdapter:
         self.is_fitted = True
         return self
 
-    def forward_logits(self, context_X, context_time=None, context_event=None, X_query=None):
+    def forward_logits(self, context_X, context_time=None, context_event=None, X_query=None, prompt=None):
         """Differentiable forward; gradients reach context_X, never backbone weights."""
         context_object = False
         if X_query is None:
@@ -145,7 +145,27 @@ class SurvPFNAdapter:
             event_flag[0, :len(cx), 0] = self.event_context.to(dtype=x.dtype)
         x = torch.cat([x, event_flag], dim=-1)
         y = self.target_transform.transform(self.time_context).unsqueeze(0)
-        return self.model((x, y), single_eval_pos=len(cx), cat_mask=self.cat_mask)[0]
+        if prompt is None:
+            return self.model((x, y), single_eval_pos=len(cx), cat_mask=self.cat_mask)[0]
+        def replace_context(module, inputs, output):
+            return torch.cat([
+                torch.cat([prompt.unsqueeze(0), output[:, :len(cx), -1:, :]], dim=2),
+                output[:, len(cx):, :, :],
+            ], dim=1)
+        hook = self.model.feature_encoder.register_forward_hook(replace_context)
+        try:
+            return self.model((x, y), single_eval_pos=len(cx), cat_mask=self.cat_mask)[0]
+        finally:
+            hook.remove()
+
+    def predict_prompt(self, context_X, time, event, prompt, X_query):
+        torch = self._torch
+        with torch.no_grad():
+            logits = self.forward_logits(context_X, time, event, X_query, prompt=prompt)
+            mean_norm = self.distribution.mean(logits)
+            risk = -(mean_norm * self.target_transform.std_ + self.target_transform.mean_)
+            times, survival = self.estimator._survival_grid(logits)
+        return {"risk": risk.cpu().numpy(), "times": times, "survival": survival}
 
     def loss(self, logits, query_time, query_event, ipcw):
         from ..losses.survival import native_censored_nll

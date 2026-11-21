@@ -269,7 +269,8 @@ def run(args, cfg, out):
                                 ids = initial.source_indices
                                 actual_seed = initial.metadata['seed']
                                 instance = cls(adapter, context_size=k, seed=actual_seed, initialization=init,
-                                               steps=stage, batch_size=32, learning_rate=.001, validation_every=50)
+                                               steps=stage, batch_size=32, learning_rate=.001, validation_every=50,
+                                               context_space=cfg.get("context_space", "embedding"))
                                 state = folder / 'training.pt'
                                 instance.fit(bundle['reference'], bundle['queries'], bundle['validation'],
                                              risk_reference_data=bundle['train'], state_path=state, resume=state.exists())
@@ -278,7 +279,7 @@ def run(args, cfg, out):
                                 instance.save(folder / f'context_{stage}.pt')
                                 adapter.categorical_mask = instance.context.categorical_mask
                                 adapter.fit_context(instance.context.X, instance.context.time, instance.context.event)
-                                prediction = batch_predict(adapter, bundle['test'].X)
+                                prediction = batch_predict(instance, bundle['test'].X)
                             elif method == 'knn':
                                 instance = KNNContext(adapter, context_size=k, seed=seed).fit(bundle['reference'],bundle['queries'],bundle['validation'])
                                 prediction = instance.predict(bundle['test'].X, record_neighbors=True)
@@ -302,6 +303,7 @@ def run(args, cfg, out):
                             os.replace(temp, selection)
                             result = {'status':'complete', 'benchmark':benchmark, 'dataset':label, 'seed':seed,
                                       'K':k, 'method':method, 'initialization':init, 'stage':stage,
+                                      'context_space': cfg.get('context_space', 'embedding') if method in ('tunetables', 'riskset-listwise') else 'input',
                                       'effective_seed':actual_seed, 'selection_sha256':array_hash(ids),
                                       'predictions_sha256':{name:array_hash(prediction[name])
                                                             for name in ('risk', 'times', 'survival')},

@@ -28,7 +28,13 @@ class ContextMethod:
                  n_time_strata: int = 4, censoring_weight_floor: float = 0.05,
                  diagnostics_every: int = 100, deadline_epoch: float | None = None,
                  deadline_control_path: str | Path | None = None,
-                 auxiliary_strength: float = .1):
+                 auxiliary_strength: float = .1, context_space: str | None = None):
+        self.context_space = context_space or ("embedding" if self.name in {"tunetables", "riskset-listwise"} else "input")
+        if self.context_space not in {"input", "embedding"}:
+            raise ValueError("context_space must be input or embedding")
+        if self.context_space == "embedding" and (self.name not in {"tunetables", "riskset-listwise"} or initialization == "gaussian" or loss_components):
+            raise ValueError("embedding mode supports TuneTables and Listwise with random or stratified initialization")
+        self.prompt = None
         self.adapter, self.k, self.seed = adapter, context_size, seed
         self.initialization, self.steps = initialization, steps
         self.batch_size, self.learning_rate = batch_size, learning_rate
@@ -67,12 +73,19 @@ class ContextMethod:
         self.context = initial
         self.diagnostics = {"n_optimized_features": int(initial.trainable_mask.sum()),
                             "optimized_feature_indices": np.flatnonzero(initial.trainable_mask).tolist()}
+        if self.context_space == "embedding":
+            self.diagnostics["n_optimized_features"] = initial.X.shape[1]
+            self.diagnostics["optimized_feature_indices"] = list(range(initial.X.shape[1]))
         self.adapter.categorical_mask = initial.categorical_mask
         self.adapter.fit_context(initial.X, initial.time, initial.event)
         x_fixed = torch.as_tensor(initial.X.copy(), dtype=torch.float32, device=self.adapter.device)
         mask = torch.as_tensor(initial.trainable_mask, dtype=torch.bool, device=self.adapter.device)
+        if self.context_space == "embedding":
+            x_fixed = torch.empty((self.k, initial.X.shape[1], self.adapter.config.embedding_dim),
+                                  dtype=torch.float32, device=self.adapter.device).uniform_(-1, 1)
+            mask = torch.ones_like(x_fixed, dtype=torch.bool)
         x_parameter = torch.nn.Parameter(x_fixed.clone())
-        x_trainable = initial.trainable_mask.any()
+        x_trainable = bool(mask.any())
         optimizer = torch.optim.Adam([x_parameter], lr=self.learning_rate) if x_trainable else None
         query_t = np.asarray(optimization_queries.time)
         query_e = np.asarray(optimization_queries.event)
@@ -89,6 +102,8 @@ class ContextMethod:
                      "censoring_weight_floor": float(self.censoring_weight_floor),
                      "initialization": self.initialization, "n_time_strata": int(self.n_time_strata),
                      "device": str(self.adapter.device)}
+        if self.context_space == "embedding":
+            signature["context_space"] = "embedding"
         if self.name in {"riskset-score", "riskset-listwise"}:
             signature.update(objective_version=2, objective=self.name,
                              auxiliary_strength=self.auxiliary_strength)
@@ -166,8 +181,8 @@ class ContextMethod:
             batch = rng.choice(len(optimization_queries),
                                size=min(self.batch_size, len(optimization_queries)), replace=False)
             optimizer.zero_grad(set_to_none=True)
-            x_effective = torch.where(mask[None, :], x_parameter, x_fixed)
-            logits = self.adapter.forward_logits(x_effective, initial.time, initial.event,
+            x_effective = torch.where(mask, x_parameter, x_fixed)
+            logits = self._forward(x_effective, initial.time, initial.event,
                                                   torch.as_tensor(optimization_queries.X[batch], device=self.adapter.device))
             nll = self.adapter.loss(logits, query_t[batch], query_e[batch], query_w[batch])
             component_losses = [component(x_effective, initial) for component in components]
@@ -199,7 +214,7 @@ class ContextMethod:
                 elif getattr(self, "_legacy_risk_term", None) is not None:
                     row["risk_bin_coverage"] = self._legacy_risk_term.last_coverage
             if self.diagnostics_every and (step + 1) % self.diagnostics_every == 0:
-                for j in np.flatnonzero(initial.trainable_mask):
+                for j in (np.flatnonzero(initial.trainable_mask) if self.context_space == "input" else []):
                     scale = float(np.nanstd(risk_data.X[:, j]))
                     scale = max(scale, 1e-6)
                     row[f"context_shift_z_feature_{j}"] = float(((x_parameter[:, j] - x_fixed[:, j]) / scale).detach().abs().mean().cpu())
@@ -208,7 +223,7 @@ class ContextMethod:
                     penalty_grad = torch.autograd.grad(sum(weighted_risk, nll.new_zeros(())), x_parameter,
                                                        retain_graph=True, allow_unused=True)[0]
                     if nll_grad is not None and penalty_grad is not None:
-                        selected = mask[None, :].expand_as(nll_grad)
+                        selected = mask.expand_as(nll_grad)
                         ng, pg = nll_grad[selected], penalty_grad[selected]
                         n_norm, p_norm = ng.norm(), pg.norm()
                         row.update(nll_grad_norm=float(n_norm.detach().cpu()),
@@ -220,7 +235,7 @@ class ContextMethod:
                 raise FloatingPointError("missing or invalid gradient for synthetic context X*")
             optimizer.step()
             if (step + 1) % self.validation_every == 0 or step + 1 == self.steps:
-                x_effective = torch.where(mask[None, :], x_parameter, x_fixed)
+                x_effective = torch.where(mask, x_parameter, x_fixed)
                 val_loss = self._validation(x_effective.detach(), validation_data, val_w)
                 row["validation_loss"] = val_loss
                 if val_loss < best_loss:
@@ -235,7 +250,10 @@ class ContextMethod:
             if state_path is not None and ((step + 1) % self.validation_every == 0 or step + 1 == self.steps):
                 self._save_training_state(state_path, torch, optimizer, x_parameter, rng,
                                           step + 1, best_loss, best_x, stale, signature)
-        self.context.X = best_x.detach()
+        if self.context_space == "embedding":
+            self.prompt = best_x.detach()
+        else:
+            self.context.X = best_x.detach()
         self.best_validation_loss = best_loss
         self.optimization_seconds = time.perf_counter() - start
         return self
@@ -286,14 +304,14 @@ class ContextMethod:
             valid = e & (t[:, None] < t[None, :]).any(axis=1)
             if not valid.any():
                 continue
-            x = torch.where(mask[None, :], parameter, fixed)
-            logits = self.adapter.forward_logits(x, context.time, context.event,
+            x = torch.where(mask, parameter, fixed)
+            logits = self._forward(x, context.time, context.event,
                 torch.as_tensor(queries.X[batch], dtype=torch.float32, device=self.adapter.device))
             nll = self.adapter.loss(logits, t, e, query_w[batch])
             auxiliary, _ = self._auxiliary_loss(x, logits, t, e)
             ng = torch.autograd.grad(nll, parameter, retain_graph=True)[0]
             ag = torch.autograd.grad(auxiliary, parameter)[0]
-            selected = mask[None, :].expand_as(ng)
+            selected = mask.expand_as(ng)
             n_norm, a_norm = float(ng[selected].norm().detach()), float(ag[selected].norm().detach())
             if not np.isfinite([n_norm, a_norm]).all() or min(n_norm, a_norm) <= 1e-12:
                 continue
@@ -320,10 +338,15 @@ class ContextMethod:
         """Return differentiable scalar additions; subclasses can extend the objective."""
         return []
 
+    def _forward(self, x, time, event, queries):
+        if self.context_space == "embedding":
+            return self.adapter.forward_logits(self.context.X, time, event, queries, prompt=x)
+        return self.adapter.forward_logits(x, time, event, queries)
+
     def _validation(self, x, validation, weights):
         torch = self.adapter._torch
         with torch.no_grad():
-            logits = self.adapter.forward_logits(
+            logits = self._forward(
                 x, self.context.time, self.context.event,
                 torch.as_tensor(validation.X, dtype=torch.float32, device=self.adapter.device))
             return float(self.adapter.loss(logits, validation.time, validation.event, weights).cpu())
@@ -333,7 +356,11 @@ class ContextMethod:
         # Update estimator support to the final (best validation) optimized context.
         self.adapter.fit_context(self.context.X.detach().cpu().numpy() if hasattr(self.context.X, "detach") else self.context.X,
                                  self.context.time, self.context.event)
-        result = self.adapter.predict(X_query)
+        if self.context_space == "embedding":
+            result = self.adapter.predict_prompt(self.context.X, self.context.time, self.context.event,
+                                                 self.prompt, X_query)
+        else:
+            result = self.adapter.predict(X_query)
         self.inference_seconds = time.perf_counter() - start
         return result
 
@@ -342,7 +369,8 @@ class ContextMethod:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
-        torch.save({"method": self.name, "context_X": self.context.X.detach().cpu() if hasattr(self.context.X, "detach") else self.context.X,
+        torch.save({"method": self.name, "context_space": self.context_space,
+                    "prompt": self.prompt.detach().cpu() if self.prompt is not None else None, "context_X": self.context.X.detach().cpu() if hasattr(self.context.X, "detach") else self.context.X,
                     "context_time": self.context.time, "context_event": self.context.event,
                     "categorical_mask": self.context.categorical_mask,
                     "trainable_mask": self.context.trainable_mask, "metadata": self.context.metadata,
@@ -354,6 +382,10 @@ class ContextMethod:
         payload = self.adapter._torch.load(path, map_location=self.adapter.device, weights_only=False)
         if payload["method"] != self.name:
             raise ValueError("saved method %s cannot be loaded by %s" % (payload["method"], self.name))
+        self.context_space = payload.get("context_space", "input")
+        self.prompt = payload.get("prompt")
+        if self.prompt is not None:
+            self.prompt = self.prompt.to(self.adapter.device)
         from ..contexts import SyntheticContext
         self.context = SyntheticContext(payload["context_X"], payload["context_time"],
                                         payload["context_event"], payload["categorical_mask"],

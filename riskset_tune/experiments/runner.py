@@ -21,7 +21,7 @@ from ..data.preprocessing import TrainOnlyPreprocessor
 from ..data.splits import make_splits
 from ..data.types import SurvivalDataset
 from ..evaluation import evaluate_predictions, save_results, plot_results
-from ..methods import RandomContext, RiskSetTune, TuneTables, KNNContext
+from ..methods import RandomContext, RiskSetTune, TuneTables, KNNContext, RiskSetListwiseTune
 from ..models import SurvPFNAdapter
 
 
@@ -148,13 +148,22 @@ def _cox_diagnostic(bundle, config, tau_config):
 
 
 def run_experiment(config, checkpoint, output_dir):
+    config = {**config, "training": {**config["training"]}}
+    config["training"].setdefault("context_space", "embedding")
     model_cfg, train_cfg, exp_cfg = config["model"], config["training"], config["experiment"]
-    methods = {"knn": KNNContext, "random": RandomContext, "tunetables": TuneTables, "riskset-tune": RiskSetTune}
+    methods = {"knn": KNNContext, "random": RandomContext, "tunetables": TuneTables, "riskset-tune": RiskSetTune, "riskset-listwise": RiskSetListwiseTune}
     rows = []
     split_records = []
     split_arrays = {}
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    previous_config = out / "resolved_config.yaml"
+    if previous_config.exists():
+        previous = load_config(previous_config)
+        old_mode = previous.get("training", {}).get("context_space", "input")
+        new_mode = config.get("training", {}).get("context_space", "embedding")
+        if old_mode != new_mode:
+            raise ValueError("context space differs from existing run; use a new output directory")
     for seed in exp_cfg["seeds"]:
         for k in exp_cfg["context_sizes"]:
             bundle = (prepare_survset(config, seed, max(exp_cfg["context_sizes"]))
@@ -179,12 +188,14 @@ def run_experiment(config, checkpoint, output_dir):
                     instance = method_cls(
                         adapter=adapter, context_size=k, seed=seed,
                         initialization=train_cfg.get("initialization", "stratified"),
+                        context_space=train_cfg.get("context_space") if name in {"tunetables", "riskset-listwise"} else None,
                         steps=train_cfg["steps"], batch_size=train_cfg["batch_size"],
                         learning_rate=train_cfg["learning_rate"],
                         validation_every=train_cfg["validation_every"],
                         patience=train_cfg.get("early_stopping_patience"),
                         lambda_risk=(lambda_risk if name == "riskset-tune" else 0.0),
                         risk_bins=train_cfg["risk_bins"], device=torch_device,
+                        auxiliary_strength=train_cfg.get("auxiliary_strength", .1),
                         n_time_strata=train_cfg.get("n_time_strata", 4),
                         censoring_weight_floor=train_cfg.get("censoring_weight_floor", .05),
                         diagnostics_every=train_cfg.get("diagnostics_every", 100),
@@ -213,7 +224,7 @@ def run_experiment(config, checkpoint, output_dir):
                     except ImportError:
                         pass
                     record = {"dataset": bundle["dataset"], "K": k, "seed": seed,
-                              "method": name, "lambda_risk": lambda_risk if name == "riskset-tune" else 0.0,
+                              "method": name, "context_space": instance.context_space, "lambda_risk": lambda_risk if name == "riskset-tune" else 0.0,
                               "steps_requested": train_cfg["steps"], "completed_steps": max(
                                   (row["step"] for row in instance.history), default=0),
                               "optimized_features": getattr(instance, "diagnostics", {}).get("n_optimized_features"),

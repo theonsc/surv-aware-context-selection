@@ -250,6 +250,13 @@ def metadata_file(output, config, checkpoint):
             versions[name] = metadata.version(name)
         except metadata.PackageNotFoundError:
             pass
+    previous = output / "run_metadata.json"
+    mode = config["training"].get("context_space", "embedding")
+    if previous.exists():
+        prior_config = json.loads(previous.read_text()).get("config", {})
+        prior_mode = prior_config.get("training", {}).get("context_space", "input")
+        if prior_mode != mode:
+            raise ValueError("context space differs from existing run; use a new output directory")
     atomic_json(output / "run_metadata.json", {"python": platform.python_version(), "config": config,
                 "checkpoint": str(checkpoint), "checkpoint_sha256": digest.hexdigest(),
                 "survpfn_revision": SurvPFNAdapter.UPSTREAM_REVISION, "versions": versions})
@@ -290,7 +297,7 @@ def run_job(config, checkpoint, output, control, stage, seed, k, dataset, status
                     adapter = SurvPFNAdapter(checkpoint, device="cpu",
                                              categorical_mask=bundle["reference"].categorical_mask)
                 instance = METHODS[method](adapter, context_size=k, seed=seed,
-                    initialization=train["initialization"], steps=stage, batch_size=train["batch_size"],
+                    initialization=train["initialization"], context_space=train.get("context_space") if method in {"tunetables", "riskset-listwise"} else None, steps=stage, batch_size=train["batch_size"],
                     learning_rate=train["learning_rate"], validation_every=train["validation_every"],
                     patience=None, lambda_risk=train["lambda_risk"] if method == "riskset-tune" else 0.,
                     auxiliary_strength=train["auxiliary_strength"], risk_bins=train["risk_bins"],
@@ -325,7 +332,8 @@ def run_job(config, checkpoint, output, control, stage, seed, k, dataset, status
                           "adjusted_queries": instance.diagnostics.get("adjusted_queries"),
                           "context_path": str(context_path.relative_to(output)),
                           "state_path": str(state_path.relative_to(output)) if state_path else None}
-            record.update(status="complete", dataset=dataset, seed=seed, K=k, stage=stage,
+            record.update(context_space=(instance.context_space if method not in {"coxph_l2"} else "input"),
+                          status="complete", dataset=dataset, seed=seed, K=k, stage=stage,
                           method=method, finished_utc=now(), wall_seconds=time.perf_counter() - started)
             try:
                 import psutil
@@ -369,6 +377,7 @@ def main(argv=None):
     os.write(fd, str(os.getpid()).encode())
     os.close(fd)
     config = load_config(args.config)
+    config["training"].setdefault("context_space", "embedding")
     prior = json.loads(status_path.read_text()) if status_path.exists() else {}
     status = {**prior, "state": "running", "started_epoch": prior.get("started_epoch", time.time()),
               "started_utc": prior.get("started_utc", now()), "updated_utc": now(),
