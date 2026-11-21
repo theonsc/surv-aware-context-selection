@@ -39,12 +39,15 @@ class KNNContext(ContextMethod):
             selected[positions] = candidates
         return selected, needed > 0
 
-    def predict(self, X_query):
+    def predict(self, X_query, *, record_neighbors=False):
         start = time.perf_counter()
         risks, times, curves = [], [], []
         self.diagnostics["adjusted_queries"] = 0
+        neighbors = []
         for query in np.asarray(X_query):
             indices, adjusted = self.neighbors(query)
+            if record_neighbors:
+                neighbors.append(indices)
             self.diagnostics["adjusted_queries"] += int(adjusted)
             ref = self.reference
             self.adapter.fit_context(ref.X[indices], ref.time[indices], ref.event[indices])
@@ -53,7 +56,10 @@ class KNNContext(ContextMethod):
             times.append(result["times"])
             curves.append(result["survival"][0])
         self.inference_seconds = time.perf_counter() - start
-        return {"risk": np.asarray(risks), "times": np.asarray(times), "survival": np.asarray(curves)}
+        result = {"risk": np.asarray(risks), "times": np.asarray(times), "survival": np.asarray(curves)}
+        if record_neighbors:
+            result["source_indices"] = np.asarray(neighbors)
+        return result
 
     def save(self, path):
         path = Path(path)
