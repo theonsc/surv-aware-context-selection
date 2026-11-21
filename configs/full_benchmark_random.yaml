@@ -1,0 +1,37 @@
+survset:
+- Framingham
+- LeukSurv
+- UnempDur
+- grace
+- Aids2
+- TRACE
+finsurvival:
+- - Borrow
+  - Repay
+- - Borrow
+  - Withdraw
+- - Borrow
+  - Account Liquidated
+- - Repay
+  - Borrow
+- - Repay
+  - Withdraw
+- - Repay
+  - Account Liquidated
+context_sizes:
+- 32
+- 64
+- 128
+- 256
+seeds:
+- 100
+- 101
+- 102
+stages:
+- 200
+- 1000
+- 2000
+test_size: 2048
+validation_size: 1024
+context_space: embedding
+context_selection: random

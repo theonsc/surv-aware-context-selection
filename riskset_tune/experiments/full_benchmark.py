@@ -240,7 +240,7 @@ def run(args, cfg, out):
         ('riskset-listwise', 'random'), ('riskset-listwise', 'stratified'),
     ]
     if context_selection == 'random':
-        methods = [(method, init) for method, init in methods if init == 'random']
+        methods = [(method, init) for method, init in methods if init != 'stratified']
 
     adapter = SurvPFNAdapter(args.checkpoint, device='cpu')
     record_run(out, args.config, cfg, args.checkpoint, adapter.upstream_source, Path(args.fin_root))
