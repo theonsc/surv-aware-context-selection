@@ -87,3 +87,14 @@ Os grupos de inicialização, consultas, validação e teste são disjuntos. Imp
 ## Comparação de variantes de conjuntos de risco
 
 `configs/riskset_variants.yaml` configura RiskSet-Score e RiskSet-Listwise, além das referências anteriores. A definição dos objetivos, a calibração da força e as limitações do experimento estão em [METHODOLOGY.md](METHODOLOGY.md). O executor retomável é `python -m riskset_tune.experiments.variants_pilot`; `scripts/install_variants_launch_agent.py` prepara o LaunchAgent independente no macOS. Resultados são escritos em um diretório novo sob `runs/`.
+
+## Benchmark SurvSet e FinSurvival
+
+```bash
+SURVPFN_SOURCE="$PWD/.local/upstream/SurvPFN" OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  .venv/bin/python -m riskset_tune.experiments.full_benchmark \
+  --config configs/full_benchmark.yaml --fin-root .local/finsurvival \
+  --output runs/full_benchmark
+```
+
+Repita o comando com o mesmo diretório para retomar o treino ou com outro diretório para uma execução independente. O manifesto registra as versões do ambiente e os hashes do código, das configurações, dos arquivos RDS e do checkpoint. Cada combinação guarda os índices dos splits e das linhas selecionadas, as métricas e os hashes das predições. Os métodos otimizados guardam também o melhor contexto de cada marco. Compare os hashes e as métricas, excluindo o tempo de execução. Em outra máquina, as métricas podem variar por arredondamento mesmo com os mesmos dados e versões.
