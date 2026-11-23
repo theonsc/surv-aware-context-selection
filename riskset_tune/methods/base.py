@@ -28,7 +28,8 @@ class ContextMethod:
                  n_time_strata: int = 4, censoring_weight_floor: float = 0.05,
                  diagnostics_every: int = 100, deadline_epoch: float | None = None,
                  deadline_control_path: str | Path | None = None,
-                 auxiliary_strength: float = .1, context_space: str | None = None):
+                 auxiliary_strength: float = .1, context_space: str | None = None,
+                 listwise_alpha: float | None = None):
         self.context_space = context_space or ("embedding" if self.name in {"tunetables", "riskset-listwise"} else "input")
         if self.context_space not in {"input", "embedding"}:
             raise ValueError("context_space must be input or embedding")
@@ -47,6 +48,11 @@ class ContextMethod:
         self.deadline_epoch = deadline_epoch
         self.deadline_control_path = Path(deadline_control_path) if deadline_control_path else None
         self.auxiliary_strength = float(auxiliary_strength)
+        self.listwise_alpha = listwise_alpha
+        if listwise_alpha is not None and (
+            self.name != "riskset-listwise" or not np.isfinite(listwise_alpha) or listwise_alpha <= 0
+        ):
+            raise ValueError("listwise_alpha requires RiskSet-Listwise and a positive finite weight")
         self._auxiliary_state = None
         if self.auxiliary_strength < 0:
             raise ValueError("auxiliary_strength must be non-negative")
@@ -107,6 +113,8 @@ class ContextMethod:
         if self.name in {"riskset-score", "riskset-listwise"}:
             signature.update(objective_version=2, objective=self.name,
                              auxiliary_strength=self.auxiliary_strength)
+        if self.listwise_alpha is not None:
+            signature["listwise_alpha"] = self.listwise_alpha
         query_w = ipcw_weights(risk_data.time, risk_data.event, query_t, query_e,
                                eps=self.censoring_weight_floor)
         val_w = ipcw_weights(risk_data.time, risk_data.event,
@@ -154,13 +162,17 @@ class ContextMethod:
                                  "validation_loss": initial_val, "is_initial_context": True})
             best_loss, best_x = initial_val, x_fixed.detach().clone()
         risk_parts = self._make_named_loss_components(risk_data, initial)
-        if self.name in {"riskset-score", "riskset-listwise"} and self.auxiliary_strength:
+        if self.name in {"riskset-score", "riskset-listwise"} and (
+            self.auxiliary_strength or self.listwise_alpha is not None
+        ):
             self._prepare_auxiliary(risk_data, initial)
             fingerprint = self._auxiliary_fingerprint()
             if resume:
                 self._auxiliary_state = state.get("auxiliary_state")
                 if not self._auxiliary_state or self._auxiliary_state.get("fingerprint") != fingerprint:
                     raise ValueError("auxiliary checkpoint does not match the fitted objective")
+            elif self.listwise_alpha is not None:
+                self._auxiliary_state = {"fingerprint": fingerprint, "alpha": self.listwise_alpha}
             else:
                 self._auxiliary_state = self._calibrate_auxiliary(
                     x_parameter, x_fixed, mask, initial, optimization_queries, query_w, fingerprint)

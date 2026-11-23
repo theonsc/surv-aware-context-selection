@@ -241,6 +241,16 @@ def run(args, cfg, out):
     ]
     if context_selection == 'random':
         methods = [(method, init) for method, init in methods if init != 'stratified']
+    listwise_alphas = cfg.get('listwise_alphas', [None])
+    if 'listwise_alphas' in cfg and (
+        not isinstance(listwise_alphas, list) or not listwise_alphas
+        or any(type(alpha) not in (int, float) or not np.isfinite(alpha) or alpha <= 0
+               for alpha in listwise_alphas)
+        or len(set(listwise_alphas)) != len(listwise_alphas)
+    ):
+        raise ValueError('listwise_alphas must contain distinct positive finite weights')
+    variants = [(method, init, alpha) for method, init in methods
+                for alpha in (listwise_alphas if method == 'riskset-listwise' else [None])]
 
     adapter = SurvPFNAdapter(args.checkpoint, device='cpu')
     record_run(out, args.config, cfg, args.checkpoint, adapter.upstream_source, Path(args.fin_root))
@@ -261,8 +271,10 @@ def run(args, cfg, out):
             if 'audit' in bundle:
                 (job / 'audit.json').write_text(json.dumps(bundle['audit'], indent=2))
             for k in cfg['context_sizes']:
-                for method, init in methods:
+                for method, init, alpha in variants:
                     tag = method + ('_' + init if init and method not in ('random','stratified') else '')
+                    if alpha is not None:
+                        tag += f'_alpha_{float(alpha)}'
                     folder = job / str(k) / tag; folder.mkdir(parents=True, exist_ok=True)
                     stages = cfg['stages'] if method in ('tunetables','riskset-listwise') else [0]
                     for stage in stages:
@@ -279,7 +291,8 @@ def run(args, cfg, out):
                                 actual_seed = initial.metadata['seed']
                                 instance = cls(adapter, context_size=k, seed=actual_seed, initialization=init,
                                                steps=stage, batch_size=32, learning_rate=.001, validation_every=50,
-                                               context_space=cfg.get("context_space", "embedding"))
+                                               context_space=cfg.get("context_space", "embedding"),
+                                               listwise_alpha=alpha)
                                 state = folder / 'training.pt'
                                 instance.fit(bundle['reference'], bundle['queries'], bundle['validation'],
                                              risk_reference_data=bundle['train'], state_path=state, resume=state.exists())
@@ -320,6 +333,8 @@ def run(args, cfg, out):
                         except Exception as exc:
                             result = {'status':'failed','error':repr(exc),'benchmark':benchmark,'dataset':label,
                                       'seed':seed,'K':k,'method':method,'initialization':init,'stage':stage}
+                        if alpha is not None:
+                            result['listwise_alpha'] = alpha
                         write_json(result_path, result)
                         rows = [json.loads(path.read_text()) for path in sorted(out.glob('*/*/*/*/*/*.json'))]
                         pd.DataFrame(rows).to_csv(out / 'results.tmp', index=False)
