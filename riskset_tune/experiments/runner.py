@@ -30,6 +30,18 @@ def load_config(path):
         return yaml.safe_load(stream)
 
 
+def resolve_method_names(methods, previous_methods=()):
+    legacy_run = "riskset-listwise" in previous_methods
+    resolved = [
+        ("riskset-listwise" if legacy_run else "NLL_order")
+        if name in {"riskset-listwise", "NLL_order"} else name
+        for name in methods
+    ]
+    if len(set(resolved)) != len(resolved):
+        raise ValueError("method configuration contains duplicate methods or aliases")
+    return resolved
+
+
 def _transform_dataset(data, train_idx, pca_components=None):
     train_categories = {j: vals[train_idx] for j, vals in data.categorical_values.items()}
     categorical_count = int(data.categorical_mask.sum())
@@ -148,10 +160,13 @@ def _cox_diagnostic(bundle, config, tau_config):
 
 
 def run_experiment(config, checkpoint, output_dir):
-    config = {**config, "training": {**config["training"]}}
+    config = {**config, "training": {**config["training"]},
+              "experiment": {**config["experiment"]}}
     config["training"].setdefault("context_space", "embedding")
     model_cfg, train_cfg, exp_cfg = config["model"], config["training"], config["experiment"]
-    methods = {"knn": KNNContext, "random": RandomContext, "tunetables": TuneTables, "riskset-tune": RiskSetTune, "riskset-listwise": RiskSetListwiseTune}
+    methods = {"knn": KNNContext, "random": RandomContext, "tunetables": TuneTables,
+               "riskset-tune": RiskSetTune, "riskset-listwise": RiskSetListwiseTune,
+               "NLL_order": RiskSetListwiseTune}
     rows = []
     split_records = []
     split_arrays = {}
@@ -164,6 +179,10 @@ def run_experiment(config, checkpoint, output_dir):
         new_mode = config.get("training", {}).get("context_space", "embedding")
         if old_mode != new_mode:
             raise ValueError("context space differs from existing run; use a new output directory")
+    else:
+        previous = {}
+    config["experiment"]["methods"] = resolve_method_names(
+        config["experiment"]["methods"], previous.get("experiment", {}).get("methods", []))
     for seed in exp_cfg["seeds"]:
         for k in exp_cfg["context_sizes"]:
             bundle = (prepare_survset(config, seed, max(exp_cfg["context_sizes"]))
@@ -188,7 +207,7 @@ def run_experiment(config, checkpoint, output_dir):
                     instance = method_cls(
                         adapter=adapter, context_size=k, seed=seed,
                         initialization=train_cfg.get("initialization", "stratified"),
-                        context_space=train_cfg.get("context_space") if name in {"tunetables", "riskset-listwise"} else None,
+                        context_space=train_cfg.get("context_space") if name in {"tunetables", "riskset-listwise", "NLL_order"} else None,
                         steps=train_cfg["steps"], batch_size=train_cfg["batch_size"],
                         learning_rate=train_cfg["learning_rate"],
                         validation_every=train_cfg["validation_every"],

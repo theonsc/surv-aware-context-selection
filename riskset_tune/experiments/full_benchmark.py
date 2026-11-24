@@ -237,7 +237,7 @@ def run(args, cfg, out):
     methods = [
         ('random', 'random'), ('stratified', 'stratified'), ('kmeans', None),
         ('knn', None), ('tunetables', 'random'), ('tunetables', 'stratified'),
-        ('riskset-listwise', 'random'), ('riskset-listwise', 'stratified'),
+        ('NLL_order', 'random'), ('NLL_order', 'stratified'),
     ]
     if context_selection == 'random':
         methods = [(method, init) for method, init in methods if init != 'stratified']
@@ -250,7 +250,7 @@ def run(args, cfg, out):
     ):
         raise ValueError('listwise_alphas must contain distinct positive finite weights')
     variants = [(method, init, alpha) for method, init in methods
-                for alpha in (listwise_alphas if method == 'riskset-listwise' else [None])]
+                for alpha in (listwise_alphas if method == 'NLL_order' else [None])]
 
     adapter = SurvPFNAdapter(args.checkpoint, device='cpu')
     record_run(out, args.config, cfg, args.checkpoint, adapter.upstream_source, Path(args.fin_root))
@@ -276,7 +276,7 @@ def run(args, cfg, out):
                     if alpha is not None:
                         tag += f'_alpha_{float(alpha)}'
                     folder = job / str(k) / tag; folder.mkdir(parents=True, exist_ok=True)
-                    stages = cfg['stages'] if method in ('tunetables','riskset-listwise') else [0]
+                    stages = cfg['stages'] if method in ('tunetables', 'NLL_order') else [0]
                     for stage in stages:
                         result_path = folder / f'{stage}.json'
                         if result_path.exists() and json.loads(result_path.read_text()).get('status') == 'complete':
@@ -284,7 +284,7 @@ def run(args, cfg, out):
                         started = time.time()
                         actual_seed = seed
                         try:
-                            if method in ('tunetables','riskset-listwise'):
+                            if method in ('tunetables', 'NLL_order'):
                                 cls = TuneTables if method == 'tunetables' else RiskSetListwiseTune
                                 initial = context(bundle['reference'], k, seed, init)
                                 ids = initial.source_indices
@@ -325,7 +325,7 @@ def run(args, cfg, out):
                             os.replace(temp, selection)
                             result = {'status':'complete', 'benchmark':benchmark, 'dataset':label, 'seed':seed,
                                       'K':k, 'method':method, 'initialization':init, 'stage':stage,
-                                      'context_space': cfg.get('context_space', 'embedding') if method in ('tunetables', 'riskset-listwise') else 'input',
+                                      'context_space': cfg.get('context_space', 'embedding') if method in ('tunetables', 'NLL_order') else 'input',
                                       'effective_seed':actual_seed, 'selection_sha256':array_hash(ids),
                                       'predictions_sha256':{name:array_hash(prediction[name])
                                                             for name in ('risk', 'times', 'survival')},

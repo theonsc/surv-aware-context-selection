@@ -1,4 +1,4 @@
-"""Independent, resumable staged comparison of the two risk-set objectives."""
+"""Independent, resumable staged comparison of context objectives."""
 from __future__ import annotations
 
 import argparse
@@ -19,14 +19,14 @@ import torch
 import yaml
 
 from .extended import eligibility
-from .runner import _cox_diagnostic, load_config, prepare_survset
+from .runner import _cox_diagnostic, load_config, prepare_survset, resolve_method_names
 from ..evaluation import evaluate_predictions
 from ..methods import RandomContext, RiskSetListwiseTune, RiskSetScoreTune, RiskSetTune, TuneTables, KNNContext
 from ..models import SurvPFNAdapter
 
 METHODS = {"knn": KNNContext, "tunetables": TuneTables, "riskset-tune": RiskSetTune,
            "riskset-score": RiskSetScoreTune, "riskset-listwise": RiskSetListwiseTune,
-           "random": RandomContext}
+           "NLL_order": RiskSetListwiseTune, "random": RandomContext}
 FIXED = {"random", "knn", "coxph_l2"}
 LOCK = threading.RLock()
 
@@ -79,7 +79,8 @@ def aggregate(output):
         keys = ["dataset", "K", "seed", "stage"]
         base = rows[rows.method.eq("tunetables")]
         paired = []
-        for method in ("riskset-tune", "riskset-score", "riskset-listwise", "random", "knn", "coxph_l2"):
+        for method in ("riskset-tune", "riskset-score", "riskset-listwise", "NLL_order",
+                       "random", "knn", "coxph_l2"):
             variant = rows[rows.method.eq(method)]
             merged = variant.merge(base, on=keys, suffixes=("_variant", "_baseline"))
             for r in merged.to_dict("records"):
@@ -297,7 +298,7 @@ def run_job(config, checkpoint, output, control, stage, seed, k, dataset, status
                     adapter = SurvPFNAdapter(checkpoint, device="cpu",
                                              categorical_mask=bundle["reference"].categorical_mask)
                 instance = METHODS[method](adapter, context_size=k, seed=seed,
-                    initialization=train["initialization"], context_space=train.get("context_space") if method in {"tunetables", "riskset-listwise"} else None, steps=stage, batch_size=train["batch_size"],
+                    initialization=train["initialization"], context_space=train.get("context_space") if method in {"tunetables", "riskset-listwise", "NLL_order"} else None, steps=stage, batch_size=train["batch_size"],
                     learning_rate=train["learning_rate"], validation_every=train["validation_every"],
                     patience=None, lambda_risk=train["lambda_risk"] if method == "riskset-tune" else 0.,
                     auxiliary_strength=train["auxiliary_strength"], risk_bins=train["risk_bins"],
@@ -363,6 +364,12 @@ def main(argv=None):
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     status_path, control, lock_path = output / "status.json", output / "control.json", output / "driver.lock"
+    config = load_config(args.config)
+    config["training"].setdefault("context_space", "embedding")
+    prior_metadata = output / "run_metadata.json"
+    previous = json.loads(prior_metadata.read_text()).get("config", {}) if prior_metadata.exists() else {}
+    config["experiment"]["methods"] = resolve_method_names(
+        config["experiment"]["methods"], previous.get("experiment", {}).get("methods", []))
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
@@ -376,8 +383,6 @@ def main(argv=None):
             raise RuntimeError(f"pilot already running with PID {old_pid}")
     os.write(fd, str(os.getpid()).encode())
     os.close(fd)
-    config = load_config(args.config)
-    config["training"].setdefault("context_space", "embedding")
     prior = json.loads(status_path.read_text()) if status_path.exists() else {}
     status = {**prior, "state": "running", "started_epoch": prior.get("started_epoch", time.time()),
               "started_utc": prior.get("started_utc", now()), "updated_utc": now(),

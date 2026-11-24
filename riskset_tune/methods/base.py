@@ -34,7 +34,7 @@ class ContextMethod:
         if self.context_space not in {"input", "embedding"}:
             raise ValueError("context_space must be input or embedding")
         if self.context_space == "embedding" and (self.name not in {"tunetables", "riskset-listwise"} or initialization == "gaussian" or loss_components):
-            raise ValueError("embedding mode supports TuneTables and Listwise with random or stratified initialization")
+            raise ValueError("embedding mode supports TuneTables and NLL_order with random or stratified initialization")
         self.prompt = None
         self.adapter, self.k, self.seed = adapter, context_size, seed
         self.initialization, self.steps = initialization, steps
@@ -52,7 +52,7 @@ class ContextMethod:
         if listwise_alpha is not None and (
             self.name != "riskset-listwise" or not np.isfinite(listwise_alpha) or listwise_alpha <= 0
         ):
-            raise ValueError("listwise_alpha requires RiskSet-Listwise and a positive finite weight")
+            raise ValueError("listwise_alpha requires NLL_order and a positive finite weight")
         self._auxiliary_state = None
         if self.auxiliary_strength < 0:
             raise ValueError("auxiliary_strength must be non-negative")
