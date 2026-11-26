@@ -6,3 +6,16 @@ __pycache__/
 runs/
 *.pt
 *.egg-info/
+experiment_results/
+/.uv-cache/
+/relatorio-riskset.aux
+/relatorio-riskset.bbl
+/relatorio-riskset.blg
+/relatorio-riskset.fdb_latexmk
+/relatorio-riskset.fls
+/relatorio-riskset.log
+/relatorio-riskset.out
+/apresentacao-riskset-listwise.tex
+/results/
+/figuras/
+/tabelas/

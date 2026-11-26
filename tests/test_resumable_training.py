@@ -50,7 +50,7 @@ def _data():
 def _method(steps, state_path=None, resume=False, diagnostics_every=2):
     reference, queries, validation = _data()
     method = TuneTables(_ContractAdapter(), context_size=12, seed=17,
-                        initialization="random", steps=steps, batch_size=8,
+                        initialization="random", context_space="input", steps=steps, batch_size=8,
                         learning_rate=1e-3, validation_every=2, diagnostics_every=diagnostics_every)
     method.fit(reference, queries, validation, state_path=state_path, resume=resume)
     return method
@@ -79,7 +79,7 @@ def test_initial_context_is_candidate_and_categories_stay_fixed():
 
 def test_risk_gradient_instrumentation_does_not_change_updates():
     reference, queries, validation = _data()
-    options = dict(context_size=12, seed=21, initialization="random", steps=4,
+    options = dict(context_size=12, seed=21, initialization="random", context_space="input", steps=4,
                    batch_size=8, learning_rate=1e-3, validation_every=2,
                    lambda_risk=0.1, risk_bins=3)
     instrumented = RiskSetTune(_ContractAdapter(), diagnostics_every=1, **options)

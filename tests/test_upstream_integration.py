@@ -74,7 +74,7 @@ def test_new_variants_reach_context_with_frozen_backbone_and_fixed_categories(fi
                            categorical_mask=[False, False, True])
     reference, queries, validation = data.subset(np.arange(42)), data.subset(np.arange(42, 63)), data.subset(np.arange(63, 84))
     common = dict(context_size=16, seed=21, initialization="random", steps=3,
-                  batch_size=12, validation_every=1, diagnostics_every=1)
+                  batch_size=12, validation_every=1, diagnostics_every=1, context_space="input")
     model = getattr(methods, method_name)(adapter, **common)
     model.fit(reference, queries, validation, risk_reference_data=data)
     initial = reference.X[model.context.source_indices]
@@ -96,7 +96,7 @@ def test_zero_risk_weight_recovers_tunetables_training_trajectory(fitted_adapter
     data = SurvivalDataset(X, time, event)
     reference, queries, validation = data.subset(np.arange(24)), data.subset(np.arange(24, 36)), data.subset(np.arange(36, 48))
     common = dict(context_size=8, seed=11, initialization="stratified", steps=2,
-                  batch_size=4, validation_every=1, learning_rate=1e-4)
+                  batch_size=4, validation_every=1, learning_rate=1e-4, context_space="input")
     first = TuneTables(adapter, **common).fit(reference, queries, validation, risk_reference_data=data)
     # Reload a fresh frozen model through the same local artifacts to eliminate estimator state.
     from riskset_tune.models import SurvPFNAdapter
@@ -106,3 +106,56 @@ def test_zero_risk_weight_recovers_tunetables_training_trajectory(fitted_adapter
     np.testing.assert_array_equal(first.context.X.detach().cpu().numpy(),
                                   second.context.X.detach().cpu().numpy())
     assert first.history == second.history
+
+
+@pytest.mark.parametrize("method_name", ["TuneTables", "RiskSetListwiseTune"])
+def test_embedding_prompt_save_and_resume(fitted_adapter, method_name, tmp_path):
+    import torch
+    from riskset_tune.data.types import SurvivalDataset
+    from riskset_tune import methods
+    adapter, _, _, _, _ = fitted_adapter
+    rng = np.random.default_rng(8)
+    X = np.column_stack([rng.normal(size=(84, 2)), rng.integers(0, 2, size=84)]).astype(np.float32)
+    data = SurvivalDataset(X, np.arange(1, 85, dtype=np.float32), np.arange(84) % 3 != 0,
+                           categorical_mask=[False, False, True])
+    reference, queries, validation = data.subset(np.arange(42)), data.subset(np.arange(42, 63)), data.subset(np.arange(63, 84))
+    cls = getattr(methods, method_name)
+    options = dict(context_size=16, seed=21, batch_size=12, validation_every=1, diagnostics_every=1)
+    method = cls(adapter, steps=3, **options).fit(reference, queries, validation, risk_reference_data=data)
+    assert method.prompt.shape == (16, 3, adapter.config.embedding_dim)
+    prompt = method.prompt.detach().clone().requires_grad_()
+    logits = adapter.forward_logits(method.context.X, method.context.time, method.context.event,
+                                    queries.X, prompt=prompt)
+    logits.square().mean().backward()
+    assert torch.isfinite(prompt.grad).all()
+    assert prompt.grad[:, 2].abs().sum() > 0
+    assert all(p.grad is None for p in adapter.model.parameters())
+    expected = method.predict(validation.X)
+    method.save(tmp_path / "context.pt")
+    loaded = cls(adapter, steps=3, **options).load(tmp_path / "context.pt")
+    actual = loaded.predict(validation.X)
+    for key in ("risk", "survival", "times"):
+        np.testing.assert_allclose(expected[key], actual[key], rtol=1e-6, atol=1e-6)
+    state = tmp_path / "state.pt"
+    cls(adapter, steps=2, **options).fit(reference, queries, validation, risk_reference_data=data, state_path=state)
+    resumed = cls(adapter, steps=3, **options).fit(reference, queries, validation, risk_reference_data=data,
+                                                    state_path=state, resume=True)
+    torch.testing.assert_close(method.prompt, resumed.prompt)
+
+
+def test_listwise_zero_strength_matches_embedding_tunetables(fitted_adapter):
+    import torch
+    from riskset_tune.data.types import SurvivalDataset
+    from riskset_tune.methods import TuneTables, RiskSetListwiseTune
+    adapter, _, _, _, _ = fitted_adapter
+    rng = np.random.default_rng(3)
+    X = np.column_stack([rng.normal(size=(84, 2)), rng.integers(0, 2, size=84)]).astype(np.float32)
+    data = SurvivalDataset(X, np.arange(1, 85, dtype=np.float32), np.arange(84) % 3 != 0,
+                           categorical_mask=[False, False, True])
+    ref, q, val = data.subset(np.arange(42)), data.subset(np.arange(42, 63)), data.subset(np.arange(63, 84))
+    options = dict(context_size=16, seed=21, steps=3, batch_size=12,
+                   validation_every=1, auxiliary_strength=0)
+    a = TuneTables(adapter, **options).fit(ref, q, val, risk_reference_data=data)
+    b = RiskSetListwiseTune(adapter, **options).fit(ref, q, val, risk_reference_data=data)
+    torch.testing.assert_close(a.prompt, b.prompt)
+    assert a.history == b.history

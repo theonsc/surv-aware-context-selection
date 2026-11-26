@@ -105,7 +105,7 @@ def _fit(cls, steps, path=None, resume=False, strength=.1, diagnostics=2):
     reference = data.subset(np.arange(50))
     queries = data.subset(np.arange(50, 70))
     validation = data.subset(np.arange(70, 90))
-    obj = cls(_Adapter(), context_size=20, seed=17, initialization='random', steps=steps,
+    obj = cls(_Adapter(), context_size=20, seed=17, initialization='random', context_space='input', steps=steps,
               batch_size=12, validation_every=2, diagnostics_every=diagnostics,
               auxiliary_strength=strength)
     obj.fit(reference, queries, validation, risk_reference_data=data, state_path=path, resume=resume)

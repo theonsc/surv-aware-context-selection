@@ -9,7 +9,9 @@ if [ "$#" -gt 1 ]; then
 fi
 if [ "$#" -eq 1 ]; then
     run_dir=$1
-    if [ ! -f "$run_dir/manifest.json" ]; then
+    if [ ! -e "$run_dir" ]; then
+        mkdir -p "$run_dir"
+    elif [ ! -f "$run_dir/manifest.json" ]; then
         printf 'No benchmark manifest in %s\n' "$run_dir" >&2
         exit 2
     fi

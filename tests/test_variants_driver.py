@@ -6,8 +6,31 @@ import pytest
 import torch
 
 from riskset_tune.experiments.variants_pilot import aggregate, atomic_json, deadline, report
+from riskset_tune.experiments.runner import resolve_method_names
 from riskset_tune.methods import TuneTables
 from test_variants import _Adapter, dataset
+
+
+def test_nll_order_alias_and_legacy_resume():
+    assert resolve_method_names(["tunetables", "riskset-listwise"]) == ["tunetables", "NLL_order"]
+    assert resolve_method_names(["tunetables", "NLL_order"]) == ["tunetables", "NLL_order"]
+    assert resolve_method_names(["NLL_order"], ["riskset-listwise"]) == ["riskset-listwise"]
+    with pytest.raises(ValueError, match="duplicate"):
+        resolve_method_names(["riskset-listwise", "NLL_order"])
+
+
+@pytest.mark.parametrize("method", ["riskset-listwise", "NLL_order"])
+def test_aggregate_pairs_both_ordering_names(tmp_path, method):
+    job = tmp_path / "stage_200" / "data_seed_42_K_32"
+    for name, ibs in [("tunetables", .2), (method, .19)]:
+        atomic_json(job / f"results_{name}.json", {
+            "status": "complete", "dataset": "data", "K": 32, "seed": 42,
+            "stage": 200, "method": name, "ibs": ibs, "c_index_ipcw": .6,
+        })
+    rows, pairs = aggregate(tmp_path)
+    assert len(rows) == 2
+    assert pairs.iloc[0]["method"] == method
+    assert pairs.iloc[0]["ibs_delta"] == pytest.approx(-.01)
 
 
 def test_aggregate_pairs_only_complete_methods_in_same_stage(tmp_path):
@@ -34,14 +57,14 @@ def test_deadline_file_is_live_and_stops_with_checkpoint(tmp_path):
     data = dataset()
     reference, queries, validation = data.subset(range(50)), data.subset(range(50, 70)), data.subset(range(70, 90))
     path = tmp_path / 'state.pt'
-    method = TuneTables(_Adapter(), context_size=20, seed=17, initialization='random', steps=6,
+    method = TuneTables(_Adapter(), context_size=20, seed=17, initialization='random', context_space='input', steps=6,
                         batch_size=12, validation_every=2, deadline_control_path=control)
     method.fit(reference, queries, validation, risk_reference_data=data, state_path=path)
     assert method.budget_exhausted and torch.load(path, weights_only=False)['step'] == 0
     future = time.time() + 60
     atomic_json(control, {'deadline_epoch': future})
     assert deadline(control) == future
-    resumed = TuneTables(_Adapter(), context_size=20, seed=17, initialization='random', steps=6,
+    resumed = TuneTables(_Adapter(), context_size=20, seed=17, initialization='random', context_space='input', steps=6,
                          batch_size=12, validation_every=2, deadline_control_path=control)
     resumed.fit(reference, queries, validation, risk_reference_data=data, state_path=path, resume=True)
     assert not resumed.budget_exhausted
