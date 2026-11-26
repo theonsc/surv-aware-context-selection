@@ -1,6 +1,6 @@
 # Compressão de contexto para o SurvPFN
 
-Comparamos prompt tuning, com e sem ordenação de risco, a três baselines de seleção de linhas no SurvSet e no FinSurvival. O relatório é entregue separadamente.
+Comparamos prompt tuning, com e sem ordenação de risco, a três baselines de seleção de linhas no SurvSet e no FinSurvival.
 
 ## Reproduzir os experimentos
 

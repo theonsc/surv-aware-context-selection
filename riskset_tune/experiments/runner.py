@@ -77,7 +77,7 @@ def prepare_survset(config, seed, max_k):
                                            min_events=data_cfg.get("min_events", 10),
                                            max_rows=data_cfg.get("max_rows"), first_only=True)
         if not candidates:
-            raise ValueError("no eligible SurvSet dataset found; see NEXT_STEPS.md")
+            raise ValueError("no eligible SurvSet dataset found; check the dataset filters in the configuration")
         name = candidates[0]
     raw = load_survset_dataset(name)
     try:
