@@ -12,3 +12,5 @@ sh scripts/run_fixed_alpha_benchmark.sh runs/reproducao \
 ```
 
 O primeiro comando executa o benchmark e salva as métricas em `runs/reproducao/results.csv`. O segundo usa a saída dessa execução para gerar duas tabelas em CSV e quatro figuras em PNG em `runs/reproducao/relatorio/`.
+
+Para PowerShell, veja o [comando para Windows](REPRODUCIBILITY.md#windows-powershell).

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 from importlib import metadata
 import json
@@ -221,13 +220,12 @@ def main():
     parser.add_argument('--fin-root', default='.local/finsurvival')
     args = parser.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())
-    out = Path(args.output); out.mkdir(parents=True, exist_ok=True)
-    with (out / '.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        torch.set_num_threads(1)
-        torch.use_deterministic_algorithms(True)
-        with threadpool_limits(limits=1):
-            run(args, cfg, out)
+    out = Path(args.output)
+    out.mkdir(parents=True, exist_ok=True)
+    torch.set_num_threads(1)
+    torch.use_deterministic_algorithms(True)
+    with threadpool_limits(limits=1):
+        run(args, cfg, out)
 
 
 def run(args, cfg, out):

@@ -2,13 +2,13 @@
 
 ## Ambiente e insumos do benchmark
 
-O benchmark roda em CPU com Python 3.12. O executor registra versões, hashes e a configuração em um novo manifesto no diretório da execução. Use macOS ou Linux, pois o executor usa `fcntl`. A partir da raiz:
+O benchmark roda em CPU com Python 3.12. O executor registra versões, hashes e a configuração em um novo manifesto no diretório da execução. A partir da raiz:
 
 ```sh
 uv sync --locked --python 3.12 --extra dev --extra survset --extra survpfn --extra finsurvival
 uv pip install --no-deps 'tfmplayground @ git+https://github.com/automl/TFM-Playground.git@4afd33e1c60928c8425ac979b9e1fd092ad0f216'
 
-mkdir -p .local/upstream artifacts/checkpoints
+uv run --no-sync python -c "from pathlib import Path; Path('.local/upstream').mkdir(parents=True, exist_ok=True); Path('artifacts/checkpoints').mkdir(parents=True, exist_ok=True)"
 git clone https://github.com/genepi-freiburg/SurvPFN.git .local/upstream/SurvPFN
 git -C .local/upstream/SurvPFN checkout 4f26fe31efd811f546a6a3a12acd28293828ca7e
 ```
@@ -29,7 +29,20 @@ SURVPFN_SOURCE="$PWD/.local/upstream/SurvPFN" OMP_NUM_THREADS=1 OPENBLAS_NUM_THR
   --output runs/verificacao-aids2
 ```
 
-Para retomar o benchmark, repita o primeiro comando do README com o mesmo diretório. A matriz completa produz 1.296 registros. Em plataformas diferentes, o arredondamento numérico pode alterar as métricas e os hashes das predições.
+Use apenas um processo por diretório de saída. Para retomar o benchmark, aguarde o processo anterior terminar e repita o comando com o mesmo diretório, a mesma versão do código e o mesmo ambiente. Use um diretório novo ao trocar de versão ou plataforma. A matriz completa produz 1.296 registros. Em plataformas diferentes, o arredondamento numérico pode alterar as métricas e os hashes das predições.
+
+### Windows (PowerShell)
+
+Após preparar o ambiente e os dados, chame o módulo Python diretamente a partir da raiz:
+
+```powershell
+$env:SURVPFN_SOURCE = (Resolve-Path .local/upstream/SurvPFN).Path
+$env:OMP_NUM_THREADS = '1'
+$env:OPENBLAS_NUM_THREADS = '1'
+& .\.venv\Scripts\python.exe -m riskset_tune.experiments.full_benchmark --config configs/full_benchmark_fixed_alpha.yaml --output runs/reproducao
+```
+
+Após a conclusão do benchmark, use o comando `uv run --python 3.12 --script` da próxima seção para gerar as tabelas e figuras.
 
 ## Tabelas e figuras a partir de métricas salvas
 
